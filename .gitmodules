@@ -1,0 +1,4 @@
+[submodule "submodules/golioth-firmware-sdk"]
+	path = submodules/golioth-firmware-sdk
+	url = https://github.com/golioth/golioth-firmware-sdk.git
+	branch = v0.22.0

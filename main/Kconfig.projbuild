@@ -1,0 +1,57 @@
+menu "pH Monitor Configuration"
+
+config PH_POLL_INTERVAL_S
+    int "Wake / poll interval (seconds)"
+    default 60
+    range 10 3600
+    help
+        Deep sleep duration between pH readings.
+
+config PH_SENSOR_I2C_PORT
+    int "I2C port number"
+    default 0
+    range 0 1
+
+config PH_SENSOR_I2C_SDA_GPIO
+    int "I2C SDA GPIO (D4 = GPIO22)"
+    default 22
+    range 0 30
+
+config PH_SENSOR_I2C_SCL_GPIO
+    int "I2C SCL GPIO (D5 = GPIO23)"
+    default 23
+    range 0 30
+
+config PH_SENSOR_I2C_ADDR
+    hex "EZO pH I2C address (default 0x63 = decimal 99)"
+    default 0x63
+    range 0x08 0x77
+
+config PH_SENSOR_I2C_FREQ_HZ
+    int "I2C clock frequency (Hz)"
+    default 100000
+    range 10000 400000
+
+config TEMP_SENSOR_GPIO
+    int "DS18B20 data GPIO (D2 = GPIO2)"
+    default 2
+    range 0 30
+
+config PH_BATTERY_ADC_GPIO
+    int "Battery sense GPIO (A0/D0 = GPIO0)"
+    default 0
+    range 0 30
+
+config PH_BATTERY_LOW_V
+    int "Low battery cutoff (millivolts)"
+    default 3000
+    range 2500 3500
+    help
+        Skip WiFi and streaming below this voltage.
+
+config PH_STREAM_ACK_TIMEOUT_MS
+    int "Stream ACK timeout (ms)"
+    default 10000
+    range 1000 60000
+
+endmenu
