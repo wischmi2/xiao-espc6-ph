@@ -9,6 +9,9 @@ set(includes
 set(srcs
     "app_main.c"
     "ph_sensor.c"
+    "ph_ops.c"
+    "ph_shell.c"
+    "ph_rpc.c"
     "temp_sensor.c"
     "${project_common}/shell.c"
     "${esp_idf_common}/wifi.c"

@@ -7,6 +7,14 @@ config PH_POLL_INTERVAL_S
     help
         Deep sleep duration between pH readings.
 
+config PH_BOOT_GRACE_S
+    int "Boot grace period (seconds)"
+    default 10
+    range 0 120
+    help
+        After wake, keep the serial shell open this long before starting
+        the measurement cycle (time to connect and type settings).
+
 config PH_SENSOR_I2C_PORT
     int "I2C port number"
     default 0
@@ -31,6 +39,20 @@ config PH_SENSOR_I2C_FREQ_HZ
     int "I2C clock frequency (Hz)"
     default 100000
     range 10000 400000
+
+config PH_EZO_UART_TX_GPIO
+    int "EZO UART TX GPIO for mode switch (D6 = GPIO16)"
+    default 16
+    range 0 30
+    help
+        XIAO D6 connects to EZO RX for one-time UART mode switch.
+
+config PH_EZO_UART_RX_GPIO
+    int "EZO UART RX GPIO for mode switch (D7 = GPIO17)"
+    default 17
+    range 0 30
+    help
+        XIAO D7 connects to EZO TX for one-time UART mode switch.
 
 config TEMP_SENSOR_GPIO
     int "DS18B20 data GPIO (D2 = GPIO2)"

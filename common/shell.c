@@ -55,11 +55,12 @@ typedef struct
 // Map from CLI key to internal NVS keys.
 // Can't use CLI keys directly in NVS due to character length
 // limitation in NVS.
-static const shell_to_nvs_key_map_t _key_map[4] = {
+static const shell_to_nvs_key_map_t _key_map[5] = {
     {"wifi/ssid", NVS_WIFI_SSID_KEY},
     {"wifi/psk", NVS_WIFI_PASS_KEY},
     {"golioth/psk-id", NVS_GOLIOTH_PSK_ID_KEY},
     {"golioth/psk", NVS_GOLIOTH_PSK_KEY},
+    {"power/deep-sleep", NVS_DEEP_SLEEP_KEY},
 };
 
 static const esp_console_cmd_t _cmds[] = {
@@ -406,6 +407,14 @@ static int settings(int argc, char **argv)
             len += arg_len;
         }
         value[len] = '\0';
+        if (0 == strcmp(nvs_key, NVS_DEEP_SLEEP_KEY))
+        {
+            if (0 != strcmp(value, "0") && 0 != strcmp(value, "1"))
+            {
+                printf("Invalid value for %s: use 0 (stay awake) or 1 (deep sleep)\n", cli_key);
+                return 1;
+            }
+        }
         bool success = nvs_write_str(nvs_key, value);
         bool json_output = ((argc >= 5) && (0 == strcmp(argv[argc - 1], "--json")));
         if (json_output)

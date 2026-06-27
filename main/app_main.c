@@ -12,13 +12,15 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "nvs.h"
-#include "ph_sensor.h"
+#include "ph_ops.h"
+#include "ph_rpc.h"
+#include "ph_shell.h"
 #include "sample_credentials.h"
 #include "shell.h"
-#include "temp_sensor.h"
 #include "wifi.h"
 
 #include <golioth/client.h>
+#include <golioth/rpc.h>
 #include <golioth/stream.h>
 
 #define TAG "ph_monitor"
@@ -33,7 +35,7 @@ static void on_client_event(struct golioth_client *client,
                             void *arg)
 {
     bool is_connected = (event == GOLIOTH_CLIENT_EVENT_CONNECTED);
-    if (is_connected)
+    if (is_connected && s_connected_sem != NULL)
     {
         xSemaphoreGive(s_connected_sem);
     }
@@ -132,6 +134,7 @@ static void log_missing_credentials(void)
 
 static void provisioning_loop(void)
 {
+    ph_shell_register();
     shell_start();
     log_missing_credentials();
     GLTH_LOGW(TAG,
@@ -143,7 +146,9 @@ static void provisioning_loop(void)
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
-    GLTH_LOGI(TAG, "Credentials configured. Run 'reset' to start battery monitoring.");
+    GLTH_LOGI(TAG,
+             "Credentials configured. Device stays awake by default; set "
+             "'settings set power/deep-sleep 1' when ready for battery mode, then reset.");
     while (true)
     {
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -151,25 +156,22 @@ static void provisioning_loop(void)
 }
 
 static bool stream_ph_reading(struct golioth_client *client,
-                              float ph,
-                              float temp_c,
-                              float battery_v,
-                              int cal_points,
-                              bool ph_valid)
+                              const ph_reading_t *reading,
+                              float battery_v)
 {
     char json[128];
     int len = 0;
 
-    if (ph_valid)
+    if (reading->ph_valid)
     {
         len = snprintf(json,
                        sizeof(json),
                        "{\"ph\":%.3f,\"temp_c\":%.1f,\"battery_v\":%.2f,"
                        "\"cal_points\":%d,\"heartbeat\":0}",
-                       ph,
-                       temp_c,
+                       reading->ph,
+                       reading->temp_c,
                        battery_v,
-                       cal_points);
+                       reading->cal_points);
     }
     else
     {
@@ -177,9 +179,9 @@ static bool stream_ph_reading(struct golioth_client *client,
                        sizeof(json),
                        "{\"temp_c\":%.1f,\"battery_v\":%.2f,\"cal_points\":%d,"
                        "\"heartbeat\":0}",
-                       temp_c,
+                       reading->temp_c,
                        battery_v,
-                       cal_points);
+                       reading->cal_points);
     }
 
     if (len <= 0 || len >= (int) sizeof(json))
@@ -204,56 +206,8 @@ static bool stream_ph_reading(struct golioth_client *client,
     return true;
 }
 
-static void run_measurement_cycle(void)
+static struct golioth_client *connect_golioth(void)
 {
-    ph_sensor_init();
-    ph_sensor_disable_led();
-    temp_sensor_init();
-
-    float temp_c = 25.0f;
-    if (temp_sensor_read_celsius(&temp_c) != ESP_OK)
-    {
-        GLTH_LOGW(TAG, "Temperature read failed; using 25.0 C for EZO compensation");
-        temp_c = 25.0f;
-    }
-
-    if (ph_sensor_set_temp(temp_c) != ESP_OK)
-    {
-        GLTH_LOGW(TAG, "Failed to set EZO temperature compensation");
-    }
-
-    float ph = 0.0f;
-    bool ph_valid = (ph_sensor_read(&ph) == ESP_OK);
-
-    int cal_points = 0;
-    if (ph_sensor_cal_points(&cal_points) != ESP_OK)
-    {
-        cal_points = 0;
-    }
-
-    if (ph_sensor_sleep() != ESP_OK)
-    {
-        GLTH_LOGW(TAG, "Failed to send EZO sleep command");
-    }
-
-    float battery_v = read_battery_voltage();
-    ph_sensor_deinit();
-
-    GLTH_LOGI(TAG,
-             "Reading: ph=%s%.3f temp=%.1f C battery=%.2f V cal_points=%d",
-             ph_valid ? "" : "invalid ",
-             ph_valid ? ph : 0.0f,
-             temp_c,
-             battery_v,
-             cal_points);
-
-    if (battery_v > 0.1f && battery_v < (CONFIG_PH_BATTERY_LOW_V / 1000.0f))
-    {
-        GLTH_LOGW(TAG, "Battery below %.2f V; skipping WiFi and stream",
-                  CONFIG_PH_BATTERY_LOW_V / 1000.0f);
-        return;
-    }
-
     wifi_init(nvs_read_wifi_ssid(), nvs_read_wifi_password());
     wifi_wait_for_connected();
 
@@ -267,14 +221,76 @@ static void run_measurement_cycle(void)
 
     GLTH_LOGI(TAG, "Waiting for connection to Golioth...");
     xSemaphoreTake(s_connected_sem, portMAX_DELAY);
+    return client;
+}
 
-    if (stream_ph_reading(client, ph, temp_c, battery_v, cal_points, ph_valid))
+static void log_reading(const ph_reading_t *reading, float battery_v)
+{
+    GLTH_LOGI(TAG,
+             "Reading: ph=%s%.3f temp=%.1f C battery=%.2f V cal_points=%d",
+             reading->ph_valid ? "" : "invalid ",
+             reading->ph_valid ? reading->ph : 0.0f,
+             reading->temp_c,
+             battery_v,
+             reading->cal_points);
+}
+
+static bool take_and_stream_reading(struct golioth_client *client, bool sleep_after)
+{
+    ph_reading_t reading = {0};
+    if (ph_ops_read(&reading, sleep_after) != ESP_OK)
+    {
+        GLTH_LOGW(TAG, "Sensor read failed");
+        return false;
+    }
+
+    float battery_v = read_battery_voltage();
+    log_reading(&reading, battery_v);
+
+    if (battery_v > 0.1f && battery_v < (CONFIG_PH_BATTERY_LOW_V / 1000.0f))
+    {
+        GLTH_LOGW(TAG, "Battery below %.2f V; skipping stream",
+                  CONFIG_PH_BATTERY_LOW_V / 1000.0f);
+        return false;
+    }
+
+    if (client == NULL)
+    {
+        return true;
+    }
+
+    if (stream_ph_reading(client, &reading, battery_v))
     {
         xSemaphoreTake(s_stream_ack_sem, pdMS_TO_TICKS(CONFIG_PH_STREAM_ACK_TIMEOUT_MS));
     }
+    return true;
+}
 
+static void run_measurement_cycle(void)
+{
+    struct golioth_client *client = connect_golioth();
+    take_and_stream_reading(client, true);
     golioth_client_destroy(client);
+    s_connected_sem = NULL;
+    s_stream_ack_sem = NULL;
     esp_wifi_stop();
+}
+
+static void bench_mode_run(void)
+{
+    struct golioth_client *client = connect_golioth();
+    struct golioth_rpc *rpc = golioth_rpc_init(client);
+    assert(rpc);
+    ph_rpc_register(rpc);
+
+    take_and_stream_reading(client, false);
+
+    GLTH_LOGI(TAG,
+             "Bench mode: WiFi and Golioth RPC active. Use 'ph read' or RPC for calibration.");
+    while (true)
+    {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 }
 
 static void enter_deep_sleep(void)
@@ -282,6 +298,22 @@ static void enter_deep_sleep(void)
     GLTH_LOGI(TAG, "Entering deep sleep for %d s", CONFIG_PH_POLL_INTERVAL_S);
     esp_sleep_enable_timer_wakeup((uint64_t) CONFIG_PH_POLL_INTERVAL_S * 1000000ULL);
     esp_deep_sleep_start();
+}
+
+static void boot_grace_period(void)
+{
+    ph_shell_register();
+    shell_start();
+
+    if (CONFIG_PH_BOOT_GRACE_S <= 0)
+    {
+        return;
+    }
+
+    GLTH_LOGI(TAG,
+             "Serial shell open for %d s before measurement (connect and type now)",
+             CONFIG_PH_BOOT_GRACE_S);
+    vTaskDelay(pdMS_TO_TICKS(CONFIG_PH_BOOT_GRACE_S * 1000));
 }
 
 void app_main(void)
@@ -297,6 +329,7 @@ void app_main(void)
     }
 
     nvs_init();
+    ph_ops_init();
 
     if (!nvs_credentials_are_set())
     {
@@ -304,6 +337,13 @@ void app_main(void)
         return;
     }
 
-    run_measurement_cycle();
-    enter_deep_sleep();
+    boot_grace_period();
+
+    if (nvs_deep_sleep_enabled())
+    {
+        run_measurement_cycle();
+        enter_deep_sleep();
+    }
+
+    bench_mode_run();
 }

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 #include <string.h>
+#include <strings.h>
 #include "nvs_flash.h"
 #include "esp_log.h"
 #include "nvs.h"
@@ -12,6 +13,7 @@
 
 #define WIFI_MAX_NUM_CHARS 63
 #define PSK_MAX_NUM_CHARS 127
+#define NVS_DEEP_SLEEP_DEFAULT "0"
 
 static const char *read_nvs_key_or_default(const char *key,
                                            char *out,
@@ -147,5 +149,19 @@ bool nvs_credentials_are_set(void)
     {
         return false;
     }
+    return true;
+}
+
+bool nvs_deep_sleep_enabled(void)
+{
+    char buf[8];
+    const char *val =
+        read_nvs_key_or_default(NVS_DEEP_SLEEP_KEY, buf, sizeof(buf), NVS_DEEP_SLEEP_DEFAULT);
+
+    if (0 == strcmp(val, "0") || 0 == strcasecmp(val, "false") || 0 == strcasecmp(val, "no"))
+    {
+        return false;
+    }
+
     return true;
 }

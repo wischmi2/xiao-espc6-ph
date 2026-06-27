@@ -30,7 +30,7 @@ See [PLAN.md](PLAN.md) for the full hardware wiring diagram, power budget, calib
 
 Optional battery voltage sense: solder Seeed's **200k / 200k divider** mod and read **A0 / D0 (GPIO0)** in firmware.
 
-**First-time EZO setup:** the EZO ships in UART mode. Send `I2C,99` once over UART on D6/D7 at 9600 baud, or use Atlas Desktop. Calibration persists across mode changes.
+**First-time EZO setup:** the EZO ships in UART mode. Run `ph mode i2c 99` at the `esp32>` shell (EZO RX→D6, TX→D7), then wire I2C on D4/D5. Calibration persists across mode changes.
 
 ## Prerequisites
 
@@ -84,10 +84,18 @@ settings set golioth/psk <psk-from-console>
 reset
 ```
 
+By default the device **stays awake** after each boot (10 s shell grace period, then one measurement/stream cycle, then serial shell). When you are done with setup or calibration, enable battery mode:
+
+```
+settings set power/deep-sleep 1
+reset
+```
+
 ## Expected behavior
 
 - **Provisioning:** stays awake with serial shell until WiFi and Golioth credentials are set; run `reset` after provisioning
-- **Normal operation:** wakes every **60 s** (configurable), reads pH + temperature + battery, streams to Golioth, then deep sleeps
+- **Default operation:** stays awake — 10 s shell grace period after boot, one measurement/stream cycle, then serial shell (no deep sleep)
+- **Battery mode:** `settings set power/deep-sleep 1` then `reset` — wakes every **60 s**, measures, streams, deep sleeps
 - Sends `L,0` at boot to disable the EZO LED and `Sleep` after each reading
 - Skips WiFi when battery is below **3.0 V** (configurable)
 - Stream path: `sensor/ph`
@@ -105,6 +113,7 @@ Run `idf.py menuconfig` and open **pH Monitor Configuration**:
 | Option | Default | Description |
 |---|---|---|
 | Wake / poll interval (seconds) | 60 | Deep sleep period between readings |
+| Boot grace period (seconds) | 10 | Shell stays open after wake before measuring |
 | I2C SDA GPIO | 22 | D4 |
 | I2C SCL GPIO | 23 | D5 |
 | EZO pH I2C address | 0x63 | Decimal 99 |
@@ -114,7 +123,56 @@ Run `idf.py menuconfig` and open **pH Monitor Configuration**:
 
 ## Calibration
 
-Calibration is stored on the EZO board. See [PLAN.md](PLAN.md) for buffer procedures and command reference. Phase 2 will add Golioth RPC methods for app-driven field calibration.
+Calibration is stored on the EZO board. See [PLAN.md](PLAN.md) for buffer procedures.
+
+### Serial shell (bench mode)
+
+With the device awake (default), use the `ph` command at the `esp32>` prompt:
+
+```
+ph read
+ph cal status
+ph cal mid 7.00
+ph cal low 4.00
+ph cal high 10.00
+ph cal clear
+```
+
+Run `ph read` repeatedly while the probe stabilizes in buffer solution, then issue the cal command.
+
+### Golioth RPC (bench mode)
+
+When WiFi is connected in bench mode, these RPC methods are available:
+
+| Method | Params | Action |
+|---|---|---|
+| `ph_read` | none | Return pH, temp, cal_points |
+| `cal_status` | none | Return EZO `Cal,?` and `Slope,?` |
+| `cal_mid` | `[7.00]` | Temp compensate, then `Cal,mid,7.00` |
+| `cal_low` | `[4.00]` | `Cal,low,4.00` |
+| `cal_high` | `[10.00]` | `Cal,high,10.00` |
+| `cal_clear` | none | `Cal,clear` |
+
+RPC is active only in bench mode (default). Battery mode (`power/deep-sleep 1`) streams readings but does not keep RPC online.
+
+### I2C troubleshooting
+
+At the `esp32>` prompt run:
+
+```
+ph debug
+```
+
+This prints the configured SDA/SCL/address, scans the I2C bus, and sends the EZO `i` (info) command with detailed error codes.
+
+| Symptom | Likely cause |
+|---|---|
+| Scan finds nothing, `write=ESP_ERR_TIMEOUT` | No power, wrong pins, SDA/SCL swapped, or EZO still in **UART mode** |
+| Scan finds `0x63` but probe fails | EZO asleep is OK (first command wakes it); check baud/mode if status 255 |
+| Scan finds a different address | Update address with `I2C,<addr>` over UART once, or change `PH_SENSOR_I2C_ADDR` in menuconfig |
+| Isolated carrier board | Leave **OFF** pin unconnected or pulled **high**; low = board powered off |
+
+**UART mode switch (one-time):** EZO ships in UART mode. At the `esp32>` prompt, wire EZO **RX→D6**, **TX→D7**, run `ph mode i2c 99`, then reconnect **SDA→D4**, **SCL→D5**. Do not type `I2C,99` at the shell — that goes to the ESP32, not the EZO.
 
 ## Project layout
 
@@ -124,6 +182,9 @@ Calibration is stored on the EZO board. See [PLAN.md](PLAN.md) for buffer proced
 ├── main/
 │   ├── app_main.c
 │   ├── ph_sensor.c
+│   ├── ph_ops.c
+│   ├── ph_shell.c
+│   ├── ph_rpc.c
 │   ├── temp_sensor.c
 │   └── Kconfig.projbuild
 ├── common/
